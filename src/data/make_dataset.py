@@ -1,6 +1,8 @@
 import glob
 import io
 import os
+from concurrent.futures import ThreadPoolExecutor
+from itertools import repeat
 
 import requests
 from credentials import Credentials
@@ -31,7 +33,7 @@ def load_most_given_names() -> list[str]:
     in January 2023.
 
     Returns:
-        list[str]: _description_
+        list[str]: most given names.
     """
     boy_names = []
     girl_names = []
@@ -49,73 +51,53 @@ def load_most_given_names() -> list[str]:
     return boy_names + girl_names
 
 
-def retrieve_profiles_by_names(
-    api, names: list[str], sample_size: int
-) -> list[str]:
-    """_summary_
+def download_profile_picture_by_name(name: str, sample_size: int):
+    """Download the profile pictures of persons by name using the LinkedIn API.
 
     Args:
-        api (object): LinkedIn API.
-        names (list[str]): profile names we want to search.
-        sample_size (int): number of retrieve profile for each name.
-
-    Returns:
-        list[str]: list of profile urn_id.
+        name (str): profil's name.
+        sample_size (int): number of retrieve profile picture.
     """
     FRANCE_GEO_URN = "105015875"
 
-    urn_ids = []
+    api = init_linkedin_api()
 
-    for name in tqdm(names, desc="Retrieving profiles urn_id"):
-        people = api.search_people(
-            keyword_first_name=name,
-            regions=[FRANCE_GEO_URN],
-            limit=sample_size,
-        )
+    print(api)
 
-        for person in tqdm(people, desc=f"{name}", leave=False):
-            urn_id = person["urn_id"]
+    people = api.search_people(
+        keyword_first_name=name,
+        regions=[FRANCE_GEO_URN],
+        limit=sample_size,
+    )
 
-            # Check firstname to overcome compound firstname scenario
-            # ("jean" != "jean-charles")
-            profile = api.get_profile(urn_id=urn_id)
-            if profile["firstName"] != name:
-                continue
+    for person in tqdm(people, desc=f"{name}", leave=True):
+        urn_id = person["urn_id"]
 
-            urn_ids.append(urn_id)
+        # Check firstname to overcome compound firstname scenario
+        # ("jean" != "jean-charles")
+        profile = api.get_profile(urn_id=urn_id)
+        if profile["firstName"] != name:
+            continue
 
-    return urn_ids
+        # Retrieve profil picture
+        picture_url = profile["displayPictureUrl"] + profile["img_800_800"]
+        r = requests.get(picture_url)
 
-
-def download_profile_picture(api, urn_id: str, name: str):
-    """Download the profile picture of a person using the LinkedIn API
-    and the person's urn_id.
-
-    Args:
-        api (object): API object.
-        urn_id (str): profil's urn_id.
-        name (str): profil's name.
-    """
-    profile = api.get_profile(urn_id=urn_id)
-    picture_url = profile["displayPictureUrl"] + profile["img_800_800"]
-
-    # Save profil picture
-    r = requests.get(picture_url)
-    img = Image.open(io.BytesIO(r.content))
-    img.save(f"../../data/raw/{profile['firstName']}_{urn_id}.jpg")
+        # Save picture
+        img = Image.open(io.BytesIO(r.content))
+        img.save(f"../../data/raw/{profile['firstName']}_{urn_id}.jpg")
 
 
 if __name__ == "__main__":
-    SAMPLE_LIMIT = 10
+    SAMPLE_LIMIT = 100
 
     clear_previous_data()
 
     names = load_most_given_names()
+    # names = names[0:1]
 
-    api = init_linkedin_api()
-    urn_ids = retrieve_profiles_by_names(
-        api=api, names=names, sample_size=SAMPLE_LIMIT
-    )
-
-    for urn_id in tqdm(urn_ids, desc="Doawnloading profiles picture"):
-        download_profile_picture(api=api, urn_id=urn_id)
+    with ThreadPoolExecutor() as executor:
+        executor.map(
+            lambda args: download_profile_picture_by_name(*args),
+            zip(names, repeat(SAMPLE_LIMIT)),
+        )
